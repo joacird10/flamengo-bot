@@ -112,13 +112,10 @@ def main():
         try:
             print("Executando loop...")
 
-            # TESTE FORÇADO (envia sempre ao iniciar loop)
-            enviar_telegram("🚀 TESTE MANUAL - BOT ONLINE")
-
             notificar_jogo_dia()
             monitorar_gols()
 
-            time.sleep(300)
+            time.sleep(300)  # 5 minutos
 
         except Exception as e:
             print("Erro:", e)
