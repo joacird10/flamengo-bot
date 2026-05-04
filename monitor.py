@@ -1,195 +1,134 @@
 import requests
-import json
-import os
-import time
 from datetime import datetime, timedelta
+import os
+import threading
+from flask import Flask
 
 # =========================
-# CONFIG (ENV + FALLBACK)
+# CONFIGURAÇÕES
 # =========================
-API_KEY = os.getenv("API_KEY", "37d43ab1701eba2466a068300d7d10a8")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8282685404:AAEGag9Dt_Z6Ttmko5l2spBY-7vJcqyYMzI")
-CHAT_ID = os.getenv("CHAT_ID", "879871444")
-TEAM_ID = 127
+API_KEY = os.getenv("API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+TEAM_ID = 127  # Flamengo
 
-HEADERS = {"x-apisports-key": API_KEY}
-STATE_FILE = "state.json"
+HEADERS = {
+    "x-apisports-key": API_KEY
+}
 
-# =========================
-# STATE
-# =========================
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
-
-state = load_state()
+# CONTROLE
+notificacao_enviada = False
+placar_anterior = {}
+ultimo_dia = None
 
 # =========================
 def enviar_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    response = requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+    response = requests.post(url, json={
+        "chat_id": CHAT_ID,
+        "text": msg
+    })
     print("Telegram:", response.text)
 
 # =========================
 def converter_horario(data_api):
     dt = datetime.fromisoformat(data_api.replace("Z", ""))
-    return (dt - timedelta(hours=3)).strftime("%H:%M")
+    dt_br = dt - timedelta(hours=3)
+    return dt_br.strftime("%H:%M")
 
 # =========================
 def buscar_jogo_hoje():
     hoje = datetime.now().strftime("%Y-%m-%d")
     url = f"https://v3.football.api-sports.io/fixtures?team={TEAM_ID}&date={hoje}"
 
-    resp = requests.get(url, headers=HEADERS).json()
-    jogos = resp.get("response", [])
+    response = requests.get(url, headers=HEADERS).json()
+    jogos = response.get("response", [])
 
-    if not jogos:
-        return None
+    if jogos:
+        jogo = jogos[0]
+        adversario = jogo["teams"]["away"]["name"]
+        horario = converter_horario(jogo["fixture"]["date"])
+        return True, adversario, horario
 
-    jogo = jogos[0]
-
-    return {
-        "fixture_id": jogo["fixture"]["id"],
-        "adversario": jogo["teams"]["away"]["name"],
-        "data": jogo["fixture"]["date"]
-    }
+    return False, None, None
 
 # =========================
-def notificar_9h():
+def notificar_jogo_dia():
+    global notificacao_enviada, ultimo_dia
+
     hoje = datetime.now().date()
     agora = datetime.now().strftime("%H:%M")
 
-    if state.get("ultimo_dia") == str(hoje):
-        return
+    if ultimo_dia != hoje:
+        notificacao_enviada = False
+        ultimo_dia = hoje
 
-    if "09:00" <= agora <= "09:05":
+    if "09:00" <= agora <= "09:05" and not notificacao_enviada:
+        tem_jogo, adversario, horario = buscar_jogo_hoje()
 
-        jogo = buscar_jogo_hoje()
+        if tem_jogo:
+            enviar_telegram(f"📅 Hoje tem Flamengo x {adversario} às {horario}")
 
-        if not jogo:
-            print("Sem jogo hoje → parar")
-            state.update({
-                "ultimo_dia": str(hoje),
-                "tem_jogo": False
-            })
-            save_state(state)
-            return
-
-        horario = converter_horario(jogo["data"])
-
-        enviar_telegram(
-            f"📅 Flamengo x {jogo['adversario']} às {horario}"
-        )
-
-        state.update({
-            "ultimo_dia": str(hoje),
-            "tem_jogo": True,
-            "fixture_id": jogo["fixture_id"],
-            "ultimo_placar": None,
-            "jogo_finalizado": False,
-            "jogo_iniciado": False
-        })
-
-        save_state(state)
+        notificacao_enviada = True
 
 # =========================
-def monitorar_jogo():
-    if not state.get("tem_jogo"):
-        return
+def monitorar_gols():
+    global placar_anterior
 
-    if state.get("jogo_finalizado"):
-        return
+    url = f"https://v3.football.api-sports.io/fixtures?team={TEAM_ID}&live=all"
+    response = requests.get(url, headers=HEADERS).json()
 
-    fixture_id = state.get("fixture_id")
+    for jogo in response.get("response", []):
+        fixture_id = jogo["fixture"]["id"]
 
-    url = f"https://v3.football.api-sports.io/fixtures?id={fixture_id}"
-    resp = requests.get(url, headers=HEADERS).json()
+        time_casa = jogo["teams"]["home"]["name"]
+        time_fora = jogo["teams"]["away"]["name"]
 
-    jogos = resp.get("response", [])
-    if not jogos:
-        return
+        gols_casa = jogo["goals"]["home"]
+        gols_fora = jogo["goals"]["away"]
 
-    jogo = jogos[0]
+        atual = (gols_casa, gols_fora)
 
-    status = jogo["fixture"]["status"]["short"]
-    gols_casa = jogo["goals"]["home"]
-    gols_fora = jogo["goals"]["away"]
+        if fixture_id not in placar_anterior:
+            placar_anterior[fixture_id] = atual
+            continue
 
-    atual = (gols_casa, gols_fora)
-    anterior = state.get("ultimo_placar")
+        anterior = placar_anterior[fixture_id]
 
-    print("Status:", status, "| Placar:", atual)
+        if "Flamengo" in time_casa:
+            if gols_casa > anterior[0]:
+                enviar_telegram(f"⚽ GOOOL do Flamengo! {gols_casa} x {gols_fora}")
 
-    # INÍCIO DO JOGO
-    if status in ["1H", "2H"] and not state.get("jogo_iniciado"):
-        enviar_telegram("▶️ Jogo do Flamengo começou!")
-        state["jogo_iniciado"] = True
+        if "Flamengo" in time_fora:
+            if gols_fora > anterior[1]:
+                enviar_telegram(f"⚽ GOOOL do Flamengo! {gols_casa} x {gols_fora}")
 
-    # GOLS (sem duplicar)
-    if anterior and atual != tuple(anterior):
-        enviar_telegram(f"⚽ GOL! {gols_casa} x {gols_fora}")
-
-    # FIM DO JOGO
-    if status == "FT":
-        enviar_telegram(f"🏁 Fim de jogo: {gols_casa} x {gols_fora}")
-        state["jogo_finalizado"] = True
-
-    state["ultimo_placar"] = atual
-    save_state(state)
-
-# =========================
-def calcular_intervalo():
-    if not state.get("tem_jogo"):
-        return 3600  # 1h
-
-    if state.get("jogo_finalizado"):
-        return 3600
-
-    if not state.get("jogo_iniciado"):
-        return 900  # 15 min
-
-    return 60  # jogo ao vivo
+        placar_anterior[fixture_id] = atual
 
 # =========================
 def main():
     while True:
         try:
-            print("\nExecutando loop...")
+            print("Executando loop...")
+            notificar_jogo_dia()
+            monitorar_gols()
 
-            notificar_9h()
-
-            if state.get("tem_jogo"):
-                monitorar_jogo()
-
-            intervalo = calcular_intervalo()
-            print(f"Próxima execução em {intervalo}s")
-
-            time.sleep(intervalo)
+            # intervalo de 5 minutos
+            import time
+            time.sleep(300)
 
         except Exception as e:
             print("Erro:", e)
             time.sleep(60)
 
 # =========================
-if __name__ == "__main__":
-    main()
-    
-    
-   from flask import Flask
-import threading
-import os
-
+# FLASK (necessário para Render)
+# =========================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "OK"
+    return "Bot rodando"
 
 def start_bot():
     main()
@@ -198,6 +137,7 @@ def start_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
+# =========================
 if __name__ == "__main__":
     threading.Thread(target=start_bot).start()
     start_server()
