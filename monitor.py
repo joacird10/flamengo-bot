@@ -181,7 +181,7 @@ if __name__ == "__main__":
     main()
     
     
-    from flask import Flask
+   from flask import Flask
 import threading
 import os
 
@@ -189,11 +189,15 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Bot rodando"
+    return "OK"
 
-def run_server():
+def start_bot():
+    main()
+
+def start_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# roda servidor em paralelo
-threading.Thread(target=run_server).start()
+if __name__ == "__main__":
+    threading.Thread(target=start_bot).start()
+    start_server()
