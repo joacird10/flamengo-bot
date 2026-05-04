@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import os
 import threading
 from flask import Flask
+import time
 
 # =========================
 # CONFIGURAÇÕES
@@ -110,11 +111,13 @@ def main():
     while True:
         try:
             print("Executando loop...")
+
+            # TESTE FORÇADO (envia sempre ao iniciar loop)
+            enviar_telegram("🚀 TESTE MANUAL - BOT ONLINE")
+
             notificar_jogo_dia()
             monitorar_gols()
 
-            # intervalo de 5 minutos
-            import time
             time.sleep(300)
 
         except Exception as e:
